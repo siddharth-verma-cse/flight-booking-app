@@ -1,13 +1,12 @@
-from datetime import date
-from typing import Literal
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class FlightSlice(BaseModel):
     origin: str = Field(..., min_length=3, max_length=3)
     destination: str = Field(..., min_length=3, max_length=3)
-    departure_date: date
+    departure_date: str
 
 
 class Passenger(BaseModel):
@@ -63,6 +62,7 @@ class FlightOffer(BaseModel):
 
     origin: AirportInfo
     destination: AirportInfo
+    passengers: list["OfferPassenger"]
 
 
 class SearchFlightResponse(BaseModel):
@@ -72,3 +72,103 @@ class SearchFlightResponse(BaseModel):
 class FlightConfirmPriceRequest(BaseModel):
     offer_id: str
     total_price: float
+
+
+class PassengerRequest(BaseModel):
+    passenger_id: str
+    given_name: str
+    family_name: str
+    born_on: str
+    title: str
+    gender: str
+    email: EmailStr
+    phone_number: str
+
+
+class FlightBookRequest(BaseModel):
+    offer_id: str
+    total_amount: str
+    currency: str
+    passenger: PassengerRequest
+
+
+class TicketDocument(BaseModel):
+    passenger_ids: list[str]
+    unique_identifier: str
+    type: str
+
+
+class PaymentStatus(BaseModel):
+    paid_at: Optional[str] = None
+    awaiting_payment: bool
+
+
+class PassengerResponse(BaseModel):
+    id: str
+    given_name: str
+    family_name: str
+    email: str
+    phone_number: str
+    born_on: str
+    gender: str
+    title: str
+    type: str
+
+
+class OrderResponseData(BaseModel):
+    id: str
+    booking_reference: str
+    offer_id: str
+    total_amount: str
+    total_currency: str
+    created_at: str
+    live_mode: bool
+
+    payment_status: PaymentStatus
+    passengers: list[PassengerResponse]
+    documents: list[TicketDocument]
+
+
+class FlightBookResponse(BaseModel):
+    data: OrderResponseData
+
+
+class Baggage(BaseModel):
+    quantity: int
+    type: str
+
+
+class Seat(BaseModel):
+    pitch: str
+    legroom: str
+    type: Optional[str] = None
+
+
+class Wifi(BaseModel):
+    cost: str
+    available: bool
+
+
+class Power(BaseModel):
+    available: bool
+
+
+class Amenities(BaseModel):
+    seat: Seat
+    wifi: Wifi
+    power: Power
+
+
+class Cabin(BaseModel):
+    amenities: Amenities
+    marketing_name: str
+    name: str
+
+
+class OfferPassenger(BaseModel):
+    baggages: list[Baggage]
+    cabin_class_marketing_name: str
+    passenger_id: str
+    cabin: Cabin
+    cabin_class: str
+    fare_basis_code: str
