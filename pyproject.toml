@@ -18,5 +18,6 @@ dependencies = [
     "pyjwt>=2.13.0",
     "pytest>=9.0.3",
     "python-dotenv>=1.2.2",
+    "redis[hiredis]>=8.0.0",
     "sqlmodel>=0.0.38",
 ]

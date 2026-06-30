@@ -1,14 +1,25 @@
-from fastapi import APIRouter, HTTPException
-from backend.schemas.flights import FlightSearchRequest, FlightConfirmPriceRequest
-from backend.services.duffel import search_flights as fetch_flights, fetch_flight_price
+from fastapi import APIRouter, HTTPException, Depends
+from backend.schemas.flights import (
+    FlightSearchRequest,
+    FlightConfirmPriceRequest,
+    FlightBookRequest,
+)
+from backend.services.duffel import (
+    search_flights as fetch_flights,
+    fetch_flight_price,
+    book_flight,
+)
+from backend.utils.security import get_current_user
 
-router = APIRouter(prefix="/api", tags=["flights"])
+
+router = APIRouter(
+    prefix="/api", tags=["flights"], dependencies=[Depends(get_current_user)]
+)
 
 
 @router.post("/flights/search")
 async def search_flights(search: FlightSearchRequest):
     try:
-        # TODO return cache if available Redis cache.
         flights = await fetch_flights(search)
         return flights
 
@@ -42,3 +53,14 @@ async def confirm_flight_price(price: FlightConfirmPriceRequest):
         "price": latest_price,
         "message": "Price confirmed",
     }
+
+
+@router.post("/flights/book")
+async def book_flight_route(book: FlightBookRequest):
+
+    try:
+        return await book_flight(book)
+    except HTTPException as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
