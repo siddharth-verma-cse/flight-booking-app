@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal
 
 import httpx
 from dotenv import load_dotenv
@@ -10,6 +11,12 @@ from backend.schemas.flights import (
     AirportInfo,
     FlightBookRequest,
     FlightBookResponse,
+    SeatMapResponse,
+    SeatMapSegment,
+    SeatMapRow,
+    SelectableSeat,
+    SeatSelectionService,
+    OrderListParams,
 )
 from typing import Any
 
@@ -33,6 +40,17 @@ duffel_client = httpx.AsyncClient(
         "Content-Type": "application/json",
     },
 )
+
+
+def _build_airport_info(place: dict[str, Any]) -> AirportInfo:
+    # Duffel returns `city` as a nullable object; `city_name` is a flat fallback.
+    city = place.get("city") or {}
+    city_name = place.get("city_name") or city.get("name") or ""
+    return AirportInfo(
+        code=place.get("iata_code") or "",
+        city=city_name,
+        airport_name=place.get("name") or "",
+    )
 
 
 async def search_flights(
@@ -76,16 +94,8 @@ async def search_flights(
                         OfferPassenger.model_validate(passenger)
                         for passenger in segment["passengers"]
                     ],
-                    origin=AirportInfo(
-                        code=segment["origin"]["iata_code"],
-                        city=segment["origin"]["city"]["name"],
-                        airport_name=segment["origin"]["name"],
-                    ),
-                    destination=AirportInfo(
-                        code=segment["destination"]["iata_code"],
-                        city=segment["destination"]["city"]["name"],
-                        airport_name=segment["destination"]["name"],
-                    ),
+                    origin=_build_airport_info(segment["origin"]),
+                    destination=_build_airport_info(segment["destination"]),
                 )
             )
 
@@ -111,30 +121,36 @@ def _build_order_payload(book: FlightBookRequest) -> dict[str, Any]:
     elif gender in {"female", "f"}:
         gender = "f"
 
-    return {
-        "data": {
-            "selected_offers": [book.offer_id],
-            "payments": [
-                {
-                    "type": "balance",
-                    "amount": book.total_amount,
-                    "currency": book.currency,
-                }
-            ],
-            "passengers": [
-                {
-                    "id": passenger.passenger_id,
-                    "given_name": passenger.given_name,
-                    "family_name": passenger.family_name,
-                    "born_on": passenger.born_on,
-                    "title": passenger.title.lower(),
-                    "gender": gender,
-                    "email": passenger.email,
-                    "phone_number": passenger.phone_number,
-                }
-            ],
-        }
+    data: dict[str, Any] = {
+        "type": "instant",
+        "selected_offers": [book.offer_id],
+        "payments": [
+            {
+                "type": "balance",
+                "amount": book.total_amount,
+                "currency": book.currency,
+            }
+        ],
+        "passengers": [
+            {
+                "id": passenger.passenger_id,
+                "given_name": passenger.given_name,
+                "family_name": passenger.family_name,
+                "born_on": passenger.born_on,
+                "title": passenger.title.lower(),
+                "gender": gender,
+                "email": passenger.email,
+                "phone_number": passenger.phone_number,
+            }
+        ],
     }
+
+    if book.service_ids:
+        data["services"] = [
+            {"id": service_id, "quantity": 1} for service_id in book.service_ids
+        ]
+
+    return {"data": data}
 
 
 async def fetch_flight_price(price: FlightConfirmPriceRequest) -> dict[str, Any] | None:
@@ -156,17 +172,43 @@ async def fetch_flight_price(price: FlightConfirmPriceRequest) -> dict[str, Any]
 
 async def book_flight(book: FlightBookRequest) -> FlightBookResponse:
     try:
-        price_confirmation = await fetch_flight_price(
-            FlightConfirmPriceRequest(
-                offer_id=book.offer_id,
-                total_price=float(book.total_amount),
-            )
-        )
-        if price_confirmation is None:
-            raise HTTPException(status_code=404, detail="Offer not found or expired")
+        try:
+            offer_response = await duffel_client.get(f"/air/offers/{book.offer_id}")
+            offer_response.raise_for_status()
+            offer = offer_response.json()["data"]
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise HTTPException(
+                    status_code=404, detail="Offer not found or expired"
+                )
+            raise
 
-        if price_confirmation["total_amount"] != book.total_amount:
-            raise HTTPException(status_code=400, detail="Price has changed")
+        # Expected charge is the offer base plus any selected seat services.
+        # Seat services come from the seat map, NOT the offer's available_services
+        # (which only ever contains baggage), so validate/price them from there.
+        expected_total = Decimal(offer["total_amount"])
+        if book.service_ids:
+            seat_prices = {
+                service.service_id: Decimal(service.amount)
+                for segment in (await fetch_seat_map(book.offer_id)).segments
+                for row in segment.rows
+                for seat in row.seats
+                for service in seat.services
+            }
+            for service_id in book.service_ids:
+                amount = seat_prices.get(service_id)
+                if amount is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Seat service {service_id} is not available on this offer",
+                    )
+                expected_total += amount
+
+        if Decimal(book.total_amount) != expected_total:
+            raise HTTPException(
+                status_code=400,
+                detail="Price has changed",
+            )
 
         response = await duffel_client.post(
             "/air/orders",
@@ -180,3 +222,153 @@ async def book_flight(book: FlightBookRequest) -> FlightBookResponse:
         raise HTTPException(
             status_code=exc.response.status_code, detail=exc.response.text
         )
+
+
+def _build_seat_map_response(body: dict[str, Any]) -> SeatMapResponse:
+    segments: list[SeatMapSegment] = []
+
+    for seat_map in body.get("data", []):
+        segment_id = seat_map["segment_id"]
+
+        for cabin in seat_map.get("cabins", []):
+            rows: list[SeatMapRow] = []
+
+            for row in cabin.get("rows", []):
+                seats: list[SelectableSeat] = []
+
+                for section in row.get("sections", []):
+                    for element in section.get("elements", []):
+                        if element.get("type") != "seat":
+                            continue
+
+                        services = [
+                            SeatSelectionService(
+                                service_id=service["id"],
+                                passenger_id=service["passenger_id"],
+                                amount=service["total_amount"],
+                                currency=service["total_currency"],
+                            )
+                            for service in element.get("available_services", [])
+                        ]
+
+                        seats.append(
+                            SelectableSeat(
+                                designator=element.get("designator"),
+                                available=bool(services),
+                                services=services,
+                            )
+                        )
+
+                if seats:
+                    rows.append(SeatMapRow(seats=seats))
+
+            if rows:
+                segments.append(
+                    SeatMapSegment(
+                        segment_id=segment_id,
+                        cabin_class=cabin["cabin_class"],
+                        aisles=cabin.get("aisles", 0),
+                        rows=rows,
+                    )
+                )
+
+    return SeatMapResponse(segments=segments)
+
+
+async def fetch_seat_map(offer_id: str) -> SeatMapResponse:
+    try:
+        response = await duffel_client.get(
+            "/air/seat_maps",
+            params={"offer_id": offer_id},
+        )
+        response.raise_for_status()
+        return _build_seat_map_response(response.json())
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=exc.response.text,
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach flight search provider",
+        ) from exc
+
+
+async def get_order(order_id: str) -> dict[str, Any]:
+    try:
+        response = await duffel_client.get(f"/air/orders/{order_id}")
+        response.raise_for_status()
+        return response.json()["data"]
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=exc.response.text,
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach flight booking provider",
+        ) from exc
+
+
+async def list_orders(params: OrderListParams) -> dict[str, Any]:
+    try:
+        response = await duffel_client.get(
+            "/air/orders",
+            params=params.model_dump(mode="json", exclude_none=True),
+        )
+        response.raise_for_status()
+        body = response.json()
+        return {"data": body["data"], "meta": body.get("meta", {})}
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=exc.response.text,
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach flight booking provider",
+        ) from exc
+
+
+async def create_order_cancellation(order_id: str) -> dict[str, Any]:
+    """Request a cancellation quote. Nothing is cancelled until it is confirmed."""
+    try:
+        response = await duffel_client.post(
+            "/air/order_cancellations",
+            json={"data": {"order_id": order_id}},
+        )
+        response.raise_for_status()
+        return response.json()["data"]
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=exc.response.text,
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach flight booking provider",
+        ) from exc
+
+
+async def confirm_order_cancellation(cancellation_id: str) -> dict[str, Any]:
+    """Confirm a cancellation quote. This actually cancels the order and refunds."""
+    try:
+        response = await duffel_client.post(
+            f"/air/order_cancellations/{cancellation_id}/actions/confirm",
+        )
+        response.raise_for_status()
+        return response.json()["data"]
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=exc.response.status_code,
+            detail=exc.response.text,
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to reach flight booking provider",
+        ) from exc
