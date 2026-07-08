@@ -90,6 +90,16 @@ class FlightBookRequest(BaseModel):
     total_amount: str
     currency: str
     passenger: PassengerRequest
+    service_ids: list[str] = Field(default_factory=list)
+
+
+class OrderListParams(BaseModel):
+    limit: int = Field(default=50, ge=1, le=200)
+    after: Optional[str] = None
+    before: Optional[str] = None
+    booking_reference: Optional[str] = None
+    awaiting_payment: Optional[bool] = None
+    sort: Optional[Literal["created_at", "payment_required_by"]] = None
 
 
 class TicketDocument(BaseModel):
@@ -172,3 +182,31 @@ class OfferPassenger(BaseModel):
     cabin: Cabin
     cabin_class: str
     fare_basis_code: str
+
+
+class SeatSelectionService(BaseModel):
+    service_id: str
+    passenger_id: str
+    amount: str
+    currency: str
+
+
+class SelectableSeat(BaseModel):
+    designator: Optional[str] = None
+    available: bool
+    services: list[SeatSelectionService]
+
+
+class SeatMapRow(BaseModel):
+    seats: list[SelectableSeat]
+
+
+class SeatMapSegment(BaseModel):
+    segment_id: str
+    cabin_class: str
+    aisles: int
+    rows: list[SeatMapRow]
+
+
+class SeatMapResponse(BaseModel):
+    segments: list[SeatMapSegment]
