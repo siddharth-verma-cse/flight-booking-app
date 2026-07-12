@@ -372,3 +372,119 @@ async def confirm_order_cancellation(cancellation_id: str) -> dict[str, Any]:
             status_code=502,
             detail="Unable to reach flight booking provider",
         ) from exc
+
+
+async def search_places(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Search for airports and cities by name or IATA code. Returns cached common airports."""
+    # Common airports database (fallback since Duffel's place search has limited availability)
+    AIRPORTS = [
+        {
+            "iata_code": "LHR",
+            "name": "London Heathrow",
+            "city": "London",
+            "country": "United Kingdom",
+        },
+        {
+            "iata_code": "JFK",
+            "name": "John F. Kennedy International",
+            "city": "New York",
+            "country": "United States",
+        },
+        {
+            "iata_code": "CDG",
+            "name": "Charles de Gaulle",
+            "city": "Paris",
+            "country": "France",
+        },
+        {
+            "iata_code": "AMS",
+            "name": "Amsterdam Airport Schiphol",
+            "city": "Amsterdam",
+            "country": "Netherlands",
+        },
+        {
+            "iata_code": "DXB",
+            "name": "Dubai International",
+            "city": "Dubai",
+            "country": "United Arab Emirates",
+        },
+        {"iata_code": "HND", "name": "Haneda", "city": "Tokyo", "country": "Japan"},
+        {
+            "iata_code": "LAX",
+            "name": "Los Angeles International",
+            "city": "Los Angeles",
+            "country": "United States",
+        },
+        {
+            "iata_code": "ORD",
+            "name": "Chicago O'Hare",
+            "city": "Chicago",
+            "country": "United States",
+        },
+        {
+            "iata_code": "LAS",
+            "name": "Harry Reid International",
+            "city": "Las Vegas",
+            "country": "United States",
+        },
+        {
+            "iata_code": "DEL",
+            "name": "Indira Gandhi International",
+            "city": "Delhi",
+            "country": "India",
+        },
+        {
+            "iata_code": "BOM",
+            "name": "Bombay Aerodrome",
+            "city": "Mumbai",
+            "country": "India",
+        },
+        {
+            "iata_code": "CCU",
+            "name": "Netaji Subhas Chandra Bose",
+            "city": "Kolkata",
+            "country": "India",
+        },
+        {
+            "iata_code": "BLR",
+            "name": "Kempegowda International",
+            "city": "Bangalore",
+            "country": "India",
+        },
+        {
+            "iata_code": "MAA",
+            "name": "Chennai International",
+            "city": "Chennai",
+            "country": "India",
+        },
+        {
+            "iata_code": "SFO",
+            "name": "San Francisco International",
+            "city": "San Francisco",
+            "country": "United States",
+        },
+        {
+            "iata_code": "LGW",
+            "name": "London Gatwick",
+            "city": "London",
+            "country": "United Kingdom",
+        },
+        {"iata_code": "FCO", "name": "Fiumicino", "city": "Rome", "country": "Italy"},
+        {
+            "iata_code": "MAD",
+            "name": "Adolfo Suárez Madrid",
+            "city": "Madrid",
+            "country": "Spain",
+        },
+    ]
+
+    query_lower = query.lower()
+    results = [
+        airport
+        for airport in AIRPORTS
+        if query_lower in airport["iata_code"].lower()
+        or query_lower in airport["name"].lower()
+        or query_lower in airport["city"].lower()
+    ]
+
+    return results[:limit]
