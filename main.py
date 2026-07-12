@@ -1,9 +1,16 @@
+import logging
+
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from .routers import flights
 
 from .routers import users
 from .crud.database import init_db
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
 
 
 @asynccontextmanager

@@ -1,5 +1,8 @@
 FROM python:3.13.9-slim
 
+# Ensure stdout/stderr are unbuffered so print() shows up in `docker logs`
+ENV PYTHONUNBUFFERED=1
+
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY . /app/backend
